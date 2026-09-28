@@ -1,4 +1,4 @@
-name = "potential-lamp"
+name = "deep-water-worker"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
