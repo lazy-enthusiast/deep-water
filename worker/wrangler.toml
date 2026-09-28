@@ -3,7 +3,6 @@ main = "src/index.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# 非 Secret 的環境變數放這裡
 [vars]
 PROXY_URL = "https://deep-water-proxy.vercel.app/api/chat"
 ALLOWED_ORIGIN = "https://lazy-enthusiast.github.io"
