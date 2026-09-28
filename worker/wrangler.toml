@@ -1,0 +1,15 @@
+name = "deep-water"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 非 Secret 的環境變數放這裡
+[vars]
+ALLOWED_ORIGIN = "https://lazy-enthusiast.github.io"
+PROXY_URL = "https://openrouter-proxy-eight-umber.vercel.app/api/chat"
+# NAME 和 PROXY_SECRET 是 Secret，不要寫在這裡
+
+# 如果你有 R2 綁定，取消註解並填入
+# [[r2_buckets]]
+# binding = "MY_BUCKET"
+# bucket_name = "你的-bucket-名稱"
