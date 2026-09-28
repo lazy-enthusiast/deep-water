@@ -5,7 +5,6 @@ compatibility_flags = ["nodejs_compat"]
 
 # 非 Secret 的環境變數放這裡
 [vars]
-ALLOWED_ORIGIN = "https://lazy-enthusiast.github.io"
 PROXY_URL = "https://openrouter-proxy-eight-umber.vercel.app/api/chat"
 # NAME 和 PROXY_SECRET 是 Secret，不要寫在這裡
 
