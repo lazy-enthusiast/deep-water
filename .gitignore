@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+
+# 本地 Secret（绝不提交）
+.dev.vars
+.env
+.env.local
+.env*.local
+
+# Cloudflare
+.wrangler/
+dist/
+
+# Vercel
+.vercel
+
+# 系统
+.DS_Store
+Thumbs.db
