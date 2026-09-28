@@ -1,0 +1,465 @@
+// ===== 工具函式 =====
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const enc = new TextEncoder();
+  const aBytes = enc.encode(a);
+  const bBytes = enc.encode(b);
+  if (aBytes.length !== bBytes.length) return false;
+  let diff = 0;
+  for (let i = 0; i < aBytes.length; i++) {
+    diff |= aBytes[i] ^ bBytes[i];
+  }
+  return diff === 0;
+}
+
+function getCorsHeaders(env) {
+  return {
+    'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN || '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-App-Auth',
+    'Access-Control-Expose-Headers': 'X-Used-Model, X-Complexity, X-Task-Tag'
+  };
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ===== 模型池（縮減成兩個：Haiku 4.5 / Sonnet 5）=====
+const MODEL_CONFIG = {
+  'Haiku-4.5': {
+    model: 'anthropic/claude-haiku-4.5',
+    max_tokens: 8201,
+    temperature: 0.3
+  },
+  'Sonnet-5': {
+    model: 'anthropic/claude-sonnet-5',
+    max_tokens: 8201
+  }
+};
+
+function pickModelKey(complexity) {
+  const score = Number.isFinite(complexity) ? complexity : 5;
+  return score <= 4 ? 'Haiku-4.5' : 'Sonnet-5';
+}
+
+// ===== 幕僚 System Prompt =====
+const SHARED_CORE_SYSTEM = `你是一部全能高階政策分析與執行引擎，專為政府部門最高幕僚層級（包含層峰決策、決策會議、跨部會協調及研考列管）提供決策支援與公文產製。
+
+壹、 幕僚核心執行守則
+一、直入核心：首行直接輸出實質決策建議或公文主旨，嚴禁開場客套、重複問題、自我介紹及文末結語寒暄。
+二、客觀中立：嚴格保持價值中立與政策中立，以數據、法規及事實為依歸，不進行無謂的道德評判，不強加單一價值觀。
+三、實事求是：面對資料不足或未知處，明確指出決策邊界與資訊缺口；面對用戶反駁時，直接以法規條文與實證資料進行論證，絕不進行無效致歉。
+四、深度詳盡：完整展開論據、正反利弊分析、跨部會影響評估與輿情風險預判，杜絕空洞修辭與套話。
+五、語體嚴謹：全文使用繁體中文，用詞精準穩重，用語符合公文規範、政府簡報與幕僚簽呈之實務語體。
+
+貳、 幕僚公文與政策文書擬作規範
+一、公文結構原則：
+  1. 簽呈與公文（函）必須嚴格遵循「主旨」、「說明」、「辦法」（或「擬辦」）之三段式架構。
+  2. 「主旨」必須一語貫穿核心訴求，明確指出「陳報何事」、「依據何在」及「請求何種處置」，字數以精簡切中要害為原則。
+  3. 「說明」應條理分明，包含案由背景、法規依據、現況分析、財務或執行評估，以及跨單位協調結論。
+  4. 「辦法/擬辦」必須具備可執行性，明確標示執行機關、辦理時程、經費來源、列管機制及陳核層級。
+二、幕僚分析報告標準（簽呈/決策報告）：
+  1. 政策效益與風險評估：必須提供至少兩套方案（含現狀維持案），並以表格形式比較各方案之可行性、預算需求、法規阻礙、法律風險及大眾輿情反應。
+  2. 爭議與對立主張處理：詳述利害關係人（如民眾、產業、民意代表等）之核心訴求與潛在反彈力道，並預先擬定回應論點（論點備忘錄）。
+  3. 執行期程與管考機制：列出關鍵里程碑、主協辦機關職責分工，以及 KPI 衡量指標。
+
+參、 資訊處理與引用防範
+一、嚴謹法規引用：引用法規時必須指出精確條項名稱，若未掌握精確法條，應明確註記「應由法制單位進一步核對最新法令」。
+二、數據論證優先：任何政策結論均須有數據或研究支持，若數據係推估值，須註明假設條件與推估邏輯。
+三、資訊缺口揭露：若背景資訊不足以支撐重大政策決策，應在報告首段明確劃定「分析範疇與限制」，並條列建議補正之調查項目。
+
+肆、 輸出格式與排版指引
+一、視覺化呈現：凡涉及多方案比較、數據統計、權責分工或時程規劃，優先使用標準 Markdown 表格呈現。
+二、重點標示：關鍵數據、擬辦結論與風險預警，使用粗體標示，方便決策者迅速抓取要點。`;
+
+// ===== 摘要 + 複雜度評分 =====
+const SUMMARIZER_SYSTEM = `你是一部對話歷史管理器與任務複雜度評估器。請只輸出一個 JSON 物件，格式如下：
+{
+  "history_summary": "...",
+  "complexity": 1-10的整數,
+  "task_tag": "簡短任務標籤"
+}
+
+【history_summary 規則】
+文字達 1500 字以上時，將【既有背景】與【上一輪回覆】結構化濃縮至 1000 字以內，提煉事實與數據；並將【用戶本次發言】原文附上存檔。
+
+【complexity 評分規則】
+1-3: 輕量問答；4-6: 一般公文/分析；7-10: 涉及政治/陳情/複雜推理之高敏任務。`;
+
+function parseSummaryResponse(raw, fallbackSummary) {
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    const jsonStr = match ? match[0] : raw;
+    const parsed = JSON.parse(jsonStr);
+    return {
+      history_summary: typeof parsed.history_summary === 'string' ? parsed.history_summary : (fallbackSummary || ''),
+      complexity: Number.isFinite(parsed.complexity) ? parsed.complexity : 5,
+      task_tag: typeof parsed.task_tag === 'string' ? parsed.task_tag : ''
+    };
+  } catch (err) {
+    return {
+      history_summary: raw || fallbackSummary || '',
+      complexity: 5,
+      task_tag: ''
+    };
+  }
+}
+
+const SUPPORTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+
+function buildAttachmentBlock(attachment) {
+  if (!attachment || !attachment.dataUrl) return null;
+  if (attachment.mimeType === 'application/pdf') {
+    return {
+      type: 'file',
+      file: { filename: attachment.filename || 'document.pdf', file_data: attachment.dataUrl }
+    };
+  }
+  if (SUPPORTED_IMAGE_TYPES.includes(attachment.mimeType)) {
+    return { type: 'image_url', image_url: { url: attachment.dataUrl } };
+  }
+  return null;
+}
+
+// ===== Mem0 =====
+async function mem0Search(env, query) {
+  if (!env.MEM0_API_KEY || !env.MEM0_USER_ID) return '';
+  try {
+    const r = await fetchWithTimeout('https://api.mem0.ai/v1/memories/search/', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Token ${env.MEM0_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ query, user_id: env.MEM0_USER_ID, limit: 5 })
+    }, 8000);
+
+    const data = await r.json();
+    const list = Array.isArray(data) ? data : (data?.results || data?.result || []);
+    const memories = list.map(x => x.memory || x.text).filter(Boolean);
+
+    if (memories.length > 0) return memories.join('\n');
+    return await mem0GetAll(env);
+  } catch (err) {
+    return '';
+  }
+}
+
+async function mem0GetAll(env) {
+  if (!env.MEM0_API_KEY || !env.MEM0_USER_ID) return '';
+  try {
+    const r = await fetchWithTimeout(`https://api.mem0.ai/v1/memories/?user_id=${env.MEM0_USER_ID}&page_size=10`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Token ${env.MEM0_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    }, 8000);
+    const data = await r.json();
+    const list = Array.isArray(data) ? data : (data?.results || []);
+    return list.map(x => x.memory || x.text).filter(Boolean).join('\n');
+  } catch (err) {
+    return '';
+  }
+}
+
+function mem0Add(env, userText, aiText) {
+  if (!env.MEM0_API_KEY || !env.MEM0_USER_ID) return Promise.resolve();
+  const trimmedAiText = aiText.length > 2000 ? aiText.slice(0, 2000) + '...[內容過長，已截斷]' : aiText;
+  return fetchWithTimeout('https://api.mem0.ai/v1/memories/', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Token ${env.MEM0_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      user_id: env.MEM0_USER_ID,
+      messages: [
+        { role: 'user', content: userText },
+        { role: 'assistant', content: trimmedAiText }
+      ]
+    })
+  }, 10000).catch(err => console.error('Mem0 Add Error:', err));
+}
+
+// ===== OpenRouter 呼叫（經 Vercel proxy）=====
+// ⚠️ OpenRouter API Key 已移至 Vercel 環境變數，此處不再持有
+function buildProxyHeaders(env) {
+  const headers = {
+    'Content-Type': 'application/json'
+  };
+  if (env.PROXY_SECRET) {
+    headers['X-Proxy-Secret'] = env.PROXY_SECRET;
+  }
+  return headers;
+}
+
+async function callOpenRouterSync(env, body, timeoutMs = 55000) {
+  const r = await fetchWithTimeout(env.PROXY_URL || 'https://openrouter-proxy-eight-umber.vercel.app/api/chat', {
+    method: 'POST',
+    headers: buildProxyHeaders(env),
+    body: JSON.stringify(body)
+  }, timeoutMs);
+
+  if (!r.ok) {
+    const errText = await r.text();
+    throw new Error(`OpenRouter Sync Error (${r.status}): ${errText}`);
+  }
+  return r.json();
+}
+
+async function callOpenRouterStream(env, body) {
+  const response = await fetch(env.PROXY_URL || 'https://openrouter-proxy-eight-umber.vercel.app/api/chat', {
+    method: 'POST',
+    headers: buildProxyHeaders(env),
+    body: JSON.stringify({ ...body, stream: true })
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`OpenRouter Stream Error (${response.status}): ${errText}`);
+  }
+  return response.body;
+}
+
+// ============================================================
+// 主 Worker
+// ============================================================
+export default {
+  async fetch(request, env, ctx) {
+    const corsHeaders = getCorsHeaders(env);
+
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    const url = new URL(request.url);
+
+    // ===== /upload 端點（加暗號驗證）=====
+    if (url.pathname === '/upload' && request.method === 'POST') {
+      const clientSecret = request.headers.get('X-App-Auth');
+      if (!timingSafeEqual(clientSecret, env.NAME)) {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+          status: 401, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+      try {
+        const formData = await request.formData();
+        const file = formData.get('file');
+        if (!file) {
+          return new Response(JSON.stringify({ error: '未收到檔案' }), {
+            status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+          });
+        }
+        if (env.MY_BUCKET) {
+          await env.MY_BUCKET.put(file.name, file.stream(), {
+            httpMetadata: { contentType: file.type }
+          });
+        }
+        return new Response(JSON.stringify({
+          success: true, filename: file.name, message: '檔案已成功上傳至 R2 Storage！'
+        }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+    }
+
+    if (request.method !== 'POST') {
+      return new Response('Method not allowed', { status: 405, headers: corsHeaders });
+    }
+
+    // ===== 暗號驗證 =====
+    const clientSecret = request.headers.get('X-App-Auth');
+    if (!timingSafeEqual(clientSecret, env.NAME)) {
+      return new Response(JSON.stringify({ error: 'Unauthorized: 暗號不匹配或拒絕存取' }), {
+        status: 401, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+
+    try {
+      const { query, historySummary, lastAiResponse, model, action, attachment } = await request.json();
+
+      // ===== 附件大小檢查 =====
+      const MAX_BASE64_LENGTH = 22 * 1024 * 1024;
+      if (attachment?.dataUrl && attachment.dataUrl.length > MAX_BASE64_LENGTH) {
+        return new Response(JSON.stringify({ error: '附件過大，請上傳 15MB 以內的檔案' }), {
+          status: 413, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      // ===== 生成對話標題（用 Llama 3.1 8B，非 reasoning，便宜快）=====
+      if (action === 'generateTitle') {
+        if (!query || typeof query !== 'string') {
+          return new Response(JSON.stringify({ error: 'Missing query' }), {
+            status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+          });
+        }
+        const titleRes = await callOpenRouterSync(env, {
+          model: 'meta-llama/llama-3.1-8b-instruct',
+          temperature: 0.3,
+          max_tokens: 50,
+          messages: [
+            { role: 'system', content: '你是一個標題生成器。請根據對話內容，生成一個3到5個字的繁體中文標題。嚴禁輸出引號、標點符號或任何解釋，只輸出標題文字本身。' },
+            { role: 'user', content: `用戶提問：${query}\nAI回答：${(lastAiResponse || '').slice(0, 300)}` }
+          ]
+        });
+        let rawTitle = titleRes?.choices?.[0]?.message?.content || '';
+        rawTitle = rawTitle.replace(/["'「」《》\n\r]/g, '').trim();
+        const title = rawTitle ? rawTitle.slice(0, 10) : query.slice(0, 12);
+        return new Response(JSON.stringify({ title }), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      const attachmentNote = attachment ? `\n【本次訊息附加了檔案：${attachment.filename || '未命名檔案'}，內容將交由正式回答模型處理】` : '';
+
+      // ===== 平行：摘要 + Mem0 檢索 =====
+      const [summaryRes, longTermMemory] = await Promise.all([
+        callOpenRouterSync(env, {
+          model: 'deepseek/deepseek-v4-flash',
+          temperature: 0.1,
+          top_p: 0.6,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: SUMMARIZER_SYSTEM },
+            { role: 'user', content: `【既有背景】：\n${historySummary || ''}\n【上一輪回覆】：\n${lastAiResponse || ''}\n【用戶本次發言】：\n${query}${attachmentNote}` }
+          ]
+        }),
+        mem0Search(env, query)
+      ]);
+
+      const rawSummaryContent = summaryRes?.choices?.[0]?.message?.content || '';
+      const { history_summary: newSummary, complexity, task_tag } = parseSummaryResponse(rawSummaryContent, historySummary);
+
+      // ===== 選擇模型（auto 依複雜度，或手動指定）=====
+      let selectedModelKey = model;
+      if (!selectedModelKey || selectedModelKey === 'auto') {
+        selectedModelKey = pickModelKey(complexity);
+      }
+      const cfg = MODEL_CONFIG[selectedModelKey] || MODEL_CONFIG['Sonnet-5'];
+
+      // ===== 組裝 System Block =====
+      const dynamicContextText = `【長期記憶】：\n${longTermMemory || '（無）'}\n\n【對話背景】：\n${newSummary || '（無）'}\n\n【上一輪回覆】：\n${lastAiResponse || '（無）'}`;
+
+      const attachmentBlock = buildAttachmentBlock(attachment);
+      const userMessageContent = attachmentBlock
+        ? [{ type: 'text', text: query }, attachmentBlock]
+        : query;
+
+      const answerBody = {
+        model: cfg.model,
+        max_tokens: cfg.max_tokens,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              {
+                type: 'text',
+                text: SHARED_CORE_SYSTEM,
+                cache_control: { type: 'ephemeral' }
+              },
+              {
+                type: 'text',
+                text: dynamicContextText
+              }
+            ]
+          },
+          {
+            role: 'user',
+            content: userMessageContent
+          }
+        ]
+      };
+
+      if (cfg.temperature !== undefined) answerBody.temperature = cfg.temperature;
+      if (attachment && attachment.mimeType === 'application/pdf') {
+        answerBody.plugins = [{ id: 'file-parser', pdf: { engine: 'native' } }];
+      }
+
+      const stream = await callOpenRouterStream(env, answerBody);
+
+      // ===== 用 buffer 正確解析跨 chunk 的 SSE =====
+      let fullAnswerText = '';
+      let sseBuffer = '';
+
+      const transformStream = new TransformStream({
+        transform(chunk, controller) {
+          controller.enqueue(chunk);
+          sseBuffer += new TextDecoder().decode(chunk, { stream: true });
+          const lines = sseBuffer.split('\n');
+          sseBuffer = lines.pop();
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
+              try {
+                const data = JSON.parse(trimmed.slice(6));
+                const delta = data.choices?.[0]?.delta?.content;
+                if (delta) fullAnswerText += delta;
+              } catch (e) {}
+            }
+          }
+        },
+        flush() {
+          if (fullAnswerText) {
+            ctx.waitUntil(mem0Add(env, query, fullAnswerText));
+          }
+        }
+      });
+
+      // ===== 摘要元資料放在 SSE 第一個 event =====
+      const metaEvent = `data: ${JSON.stringify({
+        type: 'meta',
+        history_summary: newSummary,
+        complexity: complexity,
+        task_tag: task_tag,
+        raw_summary: rawSummaryContent,
+        used_model: selectedModelKey
+      })}\n\n`;
+
+      const tokenStream = stream.pipeThrough(transformStream);
+      const combinedStream = new ReadableStream({
+        async start(controller) {
+          controller.enqueue(new TextEncoder().encode(metaEvent));
+          const reader = tokenStream.getReader();
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              controller.enqueue(value);
+            }
+          } finally {
+            controller.close();
+          }
+        }
+      });
+
+      return new Response(combinedStream, {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Used-Model': selectedModelKey
+        }
+      });
+
+    } catch (err) {
+      const isTimeout = err.name === 'AbortError';
+      return new Response(JSON.stringify({
+        error: isTimeout ? '上游服務逾時，請稍後再試' : err.message
+      }), {
+        status: isTimeout ? 504 : 500,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
+  }
+};
