@@ -1,0 +1,57 @@
+# deep-water — 個人 AI 幕僚 Chatbot
+
+## 這是什麼
+一個人用的 AI 幕僚對話系統，專門處理政府部門政策分析、公文產製、決策支援。
+前端是純靜態 HTML，跑在 GitHub Pages。核心邏輯在 Cloudflare Worker。
+因為辦公室無 VPN 無法直連 Claude，透過 Vercel proxy 換出口 IP 繞過封鎖。
+
+## 三層架構（各有存在理由，不要合併）
+- index.html        → 前端 UI（GitHub Pages）。持有 UI 狀態、localStorage 的 historySummary
+- worker/           → Cloudflare Worker（邏輯層）。驗證、摘要、記憶、模型選擇、SSE 串流
+- proxy/            → Vercel Proxy。唯一持有 OPENROUTER_API_KEY 的地方。換出口 IP
+
+## 資料流（記住這條線）
+前端 → Worker（X-App-Auth 驗證）→ Proxy（X-Proxy-Secret 驗證）→ OpenRouter → Claude
+
+## 環境變數（全部走 env，絕不硬編碼）
+Worker 持有：
+- NAME              = 前端來的 X-App-Auth 暗號（⚠️ 名字取差了，它其實是密鑰）
+- PROXY_URL         = Vercel proxy 的 URL
+- PROXY_SECRET      = 打 proxy 用的密鑰
+- MEM0_API_KEY      = Mem0 的 key
+- MEM0_USER_ID      = 只有我一個人用
+- ALLOWED_ORIGIN    = CORS 允許的來源
+- MY_BUCKET         = R2 bucket（/upload 端點用）
+
+Proxy 持有：
+- PROXY_SECRET         = 驗證 worker 來的請求
+- OPENROUTER_API_KEY   = 唯一持有 OpenRouter key 的地方
+
+## 核心邏輯（worker/src/index.js）
+1. 驗證 X-App-Auth
+2. 平行跑：摘要（deepseek-v4-flash）+ Mem0 檢索
+3. 摘要回傳 JSON：{ history_summary, complexity, task_tag }
+4. 依 complexity 挑模型：<=4 用 Haiku-4.5，>4 用 Sonnet-5
+5. 組 system block：
+   - SHARED_CORE_SYSTEM（幕僚 prompt，有 cache_control）
+   - dynamicContextText（長期記憶 + 摘要 + 上一輪回覆）
+6. 經 proxy 呼叫 OpenRouter，stream 回前端
+7. SSE 第一個 event 是 meta（含新 summary），前端存回 localStorage
+
+## 模型池
+- Haiku-4.5   = anthropic/claude-haiku-4.5   （輕量任務）
+- Sonnet-5    = anthropic/claude-sonnet-5    （複雜任務）
+- 摘要用       = deepseek/deepseek-v4-flash   （便宜）
+- 標題用       = meta-llama/llama-3.1-8b-instruct（便宜快）
+
+## 編輯規則
+- 改 worker 的請求/回應 shape 時，同步檢查 index.html 和 proxy
+- 不要在 worker 或 index.html 硬編碼任何 key
+- SSE 的 meta event 格式是前後端契約，改了要兩邊同步
+- SHARED_CORE_SYSTEM 很長，改動要謹慎（有 prompt caching 成本）
+- 動任何跟 token 預算、摘要觸發、模型選擇有關的邏輯前，先問我
+
+## 已知待優化（不要主動改，先問）
+- 摘要每輪都跑，即使內容增量很小
+- historySummary 每輪重送給摘要模型
+- Mem0 search 每輪都打 API，沒快取
