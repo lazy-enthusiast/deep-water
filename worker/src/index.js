@@ -202,7 +202,7 @@ function buildProxyHeaders(env) {
 }
 
 async function callOpenRouterSync(env, body, timeoutMs = 55000) {
-  const r = await fetchWithTimeout(env.PROXY_URL || 'https://openrouter-proxy-eight-umber.vercel.app/api/chat', {
+  const r = await fetchWithTimeout(env.PROXY_URL || 'https://deep-water-proxy.vercel.app', {
     method: 'POST',
     headers: buildProxyHeaders(env),
     body: JSON.stringify(body)
@@ -216,7 +216,7 @@ async function callOpenRouterSync(env, body, timeoutMs = 55000) {
 }
 
 async function callOpenRouterStream(env, body) {
-  const response = await fetch(env.PROXY_URL || 'https://openrouter-proxy-eight-umber.vercel.app/api/chat', {
+  const response = await fetch(env.PROXY_URL || 'https://deep-water-proxy.vercel.app', {
     method: 'POST',
     headers: buildProxyHeaders(env),
     body: JSON.stringify({ ...body, stream: true })
