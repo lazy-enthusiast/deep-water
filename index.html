@@ -101,9 +101,6 @@
   <div id="topbar">
     <label for="modelSelect">AI Model：</label>
     <select id="modelSelect" onchange="changeModel()">
-      <option value="auto" selected>自動（依複雜度智能分流）</option>
-      <option value="Haiku-4.5">Claude Haiku 4.5（快速/簡單任務）</option>
-      <option value="Sonnet-5">Claude Sonnet 5（標準/複雜任務）</option>
     </select>
   </div>
   <div id="messages"></div>
@@ -121,10 +118,23 @@
 const WORKER_URL = 'https://deep-water-worker.davchan-clp.workers.dev/';
 const NAME = '674039782che2678sgs26784524567819987g1634567wthdy26wg6e384hrfh39';
 
-const MODEL_NAMES = {
-  'Haiku-4.5': 'Claude Haiku 4.5',
-  'Sonnet-5': 'Claude Sonnet 5'
-};
+let MODEL_NAMES = {};
+
+async function loadModels() {
+  const res = await fetch(`${WORKER_URL}api/models`);
+  const data = await res.json();
+  const select = document.getElementById('modelSelect');
+  select.innerHTML = '';
+  MODEL_NAMES = {};
+  (data.models || []).forEach(m => {
+    const option = document.createElement('option');
+    option.value = m.key;
+    option.textContent = `${m.label}（${m.description}）`;
+    if (m.key === data.default) option.selected = true;
+    select.appendChild(option);
+    MODEL_NAMES[m.key] = m.label;
+  });
+}
 
 let conversations = JSON.parse(localStorage.getItem('conversations') || '[]');
 conversations = conversations.filter(c => c && typeof c === 'object' && c.id && Array.isArray(c.messages));
@@ -722,17 +732,19 @@ inputBox.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 
-if (conversations.length === 0) {
-  newConversation();
-} else {
-  activeId = conversations[0].id;
-  if (!activeId) {
+loadModels().then(() => {
+  if (conversations.length === 0) {
     newConversation();
   } else {
-    renderSidebar();
-    renderMessages();
+    activeId = conversations[0].id;
+    if (!activeId) {
+      newConversation();
+    } else {
+      renderSidebar();
+      renderMessages();
+    }
   }
-}
+});
 
 </script>
 </body>
