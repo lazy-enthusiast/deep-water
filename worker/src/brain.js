@@ -1,11 +1,21 @@
 // ===== 模型池（縮減成兩個：Haiku 4.5 / Sonnet 5）=====
+export const DEFAULT_MODEL_KEY = 'auto';
+
 export const MODEL_CONFIG = {
+  'auto': {
+    label: '自動',
+    description: '依複雜度智能分流'
+  },
   'Haiku-4.5': {
+    label: 'Claude Haiku 4.5',
+    description: '快速/簡單任務',
     model: 'anthropic/claude-haiku-4.5',
     max_tokens: 8201,
     temperature: 0.3
   },
   'Sonnet-5': {
+    label: 'Claude Sonnet 5',
+    description: '標準/複雜任務',
     model: 'anthropic/claude-sonnet-5',
     max_tokens: 8201
   }

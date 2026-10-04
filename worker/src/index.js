@@ -1,4 +1,4 @@
-import { SHARED_CORE_SYSTEM, SUMMARIZER_SYSTEM, MODEL_CONFIG, pickModelKey } from './brain.js';
+import { SHARED_CORE_SYSTEM, SUMMARIZER_SYSTEM, MODEL_CONFIG, pickModelKey, DEFAULT_MODEL_KEY } from './brain.js';
 
 // ===== 工具函式 =====
 function timingSafeEqual(a, b) {
@@ -181,6 +181,18 @@ export default {
     }
 
     const url = new URL(request.url);
+
+    // ===== GET /api/models（公開，不驗證暗號）=====
+    if (url.pathname === '/api/models' && request.method === 'GET') {
+      const models = Object.entries(MODEL_CONFIG).map(([key, cfg]) => ({
+        key,
+        label: cfg.label,
+        description: cfg.description
+      }));
+      return new Response(JSON.stringify({ models, default: DEFAULT_MODEL_KEY }), {
+        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+    }
 
     // ===== /upload 端點（加暗號驗證）=====
     if (url.pathname === '/upload' && request.method === 'POST') {
