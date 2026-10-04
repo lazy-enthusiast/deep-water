@@ -1,7 +1,7 @@
 # 依赖
 node_modules/
 
-# 本地 Secret（绝不提交）
+# 本地 Secret
 .dev.vars
 .env
 .env.local
